@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 # Created by: Moksh Chitkara
-# Last Update: May 22nd 2026
-# v0.2.0
+# Last Update: Jul 28th 2026
+# v0.3.0
 # Copyright (C) 2026  Moksh Chitkara
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
@@ -11,6 +11,7 @@ import datetime
 
 # Global Variables
 projectManager = resolve.GetProjectManager()
+heroProject = projectManager.GetCurrentProject()
 pathqueue = None
 toqueue = None
 
@@ -26,10 +27,23 @@ def main_ui():
 					ui.Label({"ID": "tl_label","Text": "Please select hero timeline: ", "Weight": 0}),
 					ui.ComboBox({"ID": "timelines", "Weight": 2})
 				]),
+				# Checkboxes
+				ui.HGroup({"Spacing": 0, "Weight": 0}, [
+					ui.CheckBox({"ID": "case_check","Text": "Ignore capitalization", "Checked": False, "Weight": 1}),
+					ui.CheckBox({"ID": "tc_check","Text": "Label stills with timecode", "Checked": True, "Weight": 1}),
+					ui.CheckBox({"ID": "version_check","Text": "Ignore version number", "Checked": False, "Weight": 1}),
+				]),
 				
+				# Two boxes
 				ui.HGroup({"Spacing": 10}, [
 					ui.VGroup({"Spacing": 10}, [
-						ui.TextEdit({ "ID": "list","Text": "Projects to search will be listed here.", "Weight": 20}),
+						ui.TextEdit({ "ID": "list","Text": 
+"""
+Projects to search will be listed here.
+
+**Please ENABLE dynamic project switching** 
+"""
+									, "Weight": 20}),
 						ui.HGroup({"Spacing": 10},[
 							ui.HGap(),
 							ui.Button({"ID": "grab","Text": "Grab Grades", "Enabled": False, "Weight": 1}),
@@ -143,10 +157,14 @@ class PathMem:
 		self.initial = initial
 		self.path = [initial]
 		self.tl = None
+		self.searched = False
 		
 	def __str__(self):
 		if len(self.path) > 1:
-			return ' > '.join(self.path)
+			if self.searched:
+				return strike(' > '.join(self.path))
+			else:
+				return ' > '.join(self.path) 
 		else:
 			return str(self.path[0])
 			
@@ -183,11 +201,213 @@ class PathMem:
 		pathlist = []
 		for kid in kids:
 			newpath = PathMem(self.initial)
-			print(self.path[1:])
 			newpath.path = newpath.path + self.path[1:]
 			newpath.append(kid, kids[kid])
 			pathlist.append(newpath)
 		return pathlist
+
+	def open(self):
+		log("Opening project from path", str(self))
+		projectManager.GotoRootFolder() # Goes to root in project manager 
+
+		i = 0
+		for folder in self.path:
+			i += 1
+			if not projectManager.OpenFolder(folder):
+				log("Stopped at", folder)
+				break
+
+		if projectManager.LoadProject(self.path[i]):
+			log("Opened project")
+			current = projectManager.GetCurrentProject()
+			if current.SetCurrentTimeline(tlReturn(current, self.path[i+1])):
+				log("Opened timeline")
+		else:
+			return False
+		return True
+			
+		
+
+class Clip:
+
+	# all this class needs is a timeline item
+	def __init__(self, tl_item):
+		self.item = tl_item
+		self.media = self.getMedia()
+		self.isMedia = self.isMedia()
+		
+	def __str__(self):
+		return "Clip Item [" + str(self.filename()) + "]"
+
+	# confirms self is in the mediapool and not a redx or 2pop
+	# input: none
+	# output: Bool
+	def isMedia(self):
+		if self.media == None:
+			return False
+		elif self.media.GetClipProperty('File Name') == "RedX_1min_alpha.mov":
+			return False
+		elif self.media.GetClipProperty('File Name') == "2pop_uhd.tif":
+			return False
+		else:
+			return True
+			
+	def getMedia(self):
+		return self.item.GetMediaPoolItem()
+
+	# returns fps of self
+	# input: none
+	# output: float
+	def fps(self):
+		if self.isMedia:
+			numb = float(self.media.GetClipProperty('FPS'))
+		else:
+			numb = float(23.976)
+		return numb
+	
+	# determines if media has df
+	# input: none
+	# output: Bool
+	def dropframe(self):
+		drop = self.media.GetClipProperty('Drop frame')
+		if drop == "0":
+			return False
+		else:
+			return True
+
+	# shortcut to get timeline frame number of start and end
+	# input: none
+	# output: int
+	def tlStartFrame(self):
+		return int(self.item.GetStart())
+	def tlEndFrame(self):
+		return int(self.item.GetEnd())
+		
+	# gets start frame of media in mediapool
+	# input: none
+	# output: int
+	def mediaStartFrame(self):
+
+		tc = self.media.GetClipProperty('Start TC')	# this is in ##:##:##:## format
+		
+		# check to see if framerate is matching
+		if int(tc[9:]) > self.fps():
+			raise ValueError ('Timecode to frame rate mismatch.', tc, self.fps)
+			
+		# convert all strings to ints
+		hours = int(tc[:2])
+		minutes = int(tc[3:5])
+		seconds = int(tc[6:8])
+		frames = int(tc[9:])
+		
+		totalMinutes = int(60 * hours + minutes)	# convert hours to mins and sum
+		
+		# Drop Frame Calc
+		if self.dropframe():
+			
+			dropFrames = int(round(self.fps() * 0.066666))
+			timeBase = int(round(self.fps()))
+			
+			hourFrames = int(timeBase * 60 * 60)
+			minuteFrames = int(timeBase * 60)
+			
+			frm = int(((hourFrames * hours) + (minuteFrames * minutes) + (timeBase * seconds) + frames) - (dropFrames * (totalMinutes - (totalMinutes // 10))))
+		
+		# non df calc
+		else:
+			frameBase = int(round(self.fps()))
+			frm = int((totalMinutes * 60 + seconds) * frameBase + frames)
+			
+		return frm
+		
+	# Shortcuts to get mediapool endframe, effective startframe, and effective endframe
+	# where an effective endframe is the in-out points of media on timeline but as source frame numbers
+	# input: none
+	# output: int
+	def mediaEndFrame(self):
+		return self.startFrame() + int(self.media.GetClipProperty('Frames'))
+	def startFrame(self):
+		return self.mediaStartFrame() + int(self.item.GetLeftOffset())
+	def endFrame(self):
+		handles = int(self.item.GetEnd()) - int(self.item.GetStart()) - int(self.item.GetRightOffset())
+		return self.mediaEndFrame() + handles
+			
+	# shortcut to get filename of self
+	# input: none
+	# output: str or None
+	def filename(self):
+		if self.isMedia:
+			return self.media.GetClipProperty('File Name')
+		else:
+			return None
+
+	def remove_version(self):
+	
+		name = self.filename()
+		upper_name = name.upper()				# uppercase it
+		ver_idx = upper_name.rfind("_V")		# find version tag
+		
+		if ver_idx != -1:						# if we found a version, cut it off and return 
+			if (ver_idx + 2 < len(upper_name)) and (upper_name[ver_idx + 2].isdigit()):
+				return name[:ver_idx + 2]
+		return name								# otherwise return original
+
+	# Checks if self and search have the same file name
+	# input: search [another Clip]
+	# output: Bool
+	def fileMatch(self, search):
+
+		if (not self.isMedia) or (not search.isMedia):	# checks both are media
+			return False
+			
+		# now we get the file name taking version ignore into account
+		if itm['version_check'].Checked:
+			search_str = search.remove_version()
+			item_str = self.remove_version()
+		else:
+			search_str = search.filename()
+			item_str = self.filename()
+
+		# if case_check is checked then make both uppercase
+		if itm['case_check'].Checked:
+			search_str = search_str.upper()
+			item_str = item_str.upper()
+
+		if item_str == search_str:	# if they are exact match return true
+			return True
+
+		for i in range(len(search_str), 16, -1):	# reading filename backwards to min length 16 see if they match
+			if (item_str.find(search_str[:i]) == 0):
+				return True
+				
+		return False	# if nothing else return false
+	
+	# checks if search clip is overlapping with self
+	# by checking if either end of search is within self
+	# input: search [another Clip]
+	# output: Bool, Frame
+	def isInside(self, search):
+		
+		if self.fileMatch(search):	# they must have matching filenames for this
+			if search.startFrame() in range(self.startFrame(), self.endFrame(), 1):	
+				return True, search.startFrame()
+			elif self.startFrame() in range(search.startFrame(), search.endFrame(), 1):	
+				return True, self.startFrame()
+			elif search.endFrame() in range(self.startFrame(), self.endFrame(), 1):
+				return True, search.endFrame()
+			elif self.endFrame() in range(search.startFrame(), search.endFrame(), 1):
+				return True, self.endFrame()
+		return False, 0
+	
+	# Finds timeline frame number matching with match clip's start
+	# input: match [another Clip]
+	# output: tl frame [int] or False [if no match]
+	def frameMatch(self, match):
+		found, frame = self.isInside(match)
+		if found:	# confirms that match is inside self
+			return self.tlStartFrame() + (frame - self.startFrame())
+		else:
+			return False
 
 
 def log(info, level = 1):
@@ -282,16 +502,28 @@ def tlTree(project):
 	itm["browser"].AddTopLevelItem(newRow)
 	
 	log("Timeline Tree Built")
-
-# gets index of timeline
+			
+# gets timeline item based on name
 # input: project [item], tl_name [str]
-# output: i [int]
-def tlidx(project, tlName):
-
+# output: tl [Timeline Item]
+def tlReturn(project, tlName):
 	for i in range(1,project.GetTimelineCount()+1):
 		name = project.GetTimelineByIndex(i).GetName()
 		if name == tlName:
-			return int(i)
+			return project.GetTimelineByIndex(i)
+
+# fill lst with all clips in given timeline
+# input: tl [item]
+# output: clip_lst [lst of items]
+def clipReturn(tl):
+	clip_lst = [] # list to be filled
+	# for every video track get every clip and add to list
+	for i in range(1, tl.GetTrackCount("video")+1):
+		for clipItem in tl.GetItemListInTrack("video",i):
+			clip = Clip(clipItem)
+			if clip.isMedia:
+				clip_lst.append(clip)
+	return clip_lst
 
 def createPowergrade():
 	if itm["gradename"].Text == "":
@@ -308,7 +540,133 @@ def createPowergrade():
 	else:
 		log("Powergrade album creation failed", 3)
 		return False
-	
+		
+# strike through text provided and return
+# input: text [string]
+# output: result [string]
+def strike(text):
+	result = text[0] + "\u0336"
+	for c in text:
+		result += c + "\u0336"
+	return result[1:-1]
+
+# Converts frame count to SMPTE timecode.
+# input: frame [int], timeline
+# output: timecode in format "##:##:##:##"
+def get_tc(frames, timeline):
+		frames = abs(frames)
+		fps = float(timeline.GetSetting("timelineFrameRate"))
+		df = bool(int(timeline.GetSetting("timelineDropFrameTimecode")))
+
+		# Drop frame calculation using the Duncan/Heidelberger method.
+		if df:
+
+			spacer = ':'
+			spacer2 = ';'
+
+			dropFrames         = int(round(fps * .066666))
+			framesPerHour      = int(round(fps * 3600))
+			framesPer24Hours   = framesPerHour * 24
+			framesPer10Minutes = int(round(fps * 600))
+			framesPerMinute    = int(round(fps) * 60 - dropFrames)
+
+			frames = frames % framesPer24Hours
+
+			d = frames // framesPer10Minutes
+			m = frames % framesPer10Minutes
+
+			if m > dropFrames:
+				frames = frames + (dropFrames * 9 * d) + dropFrames * ((m - dropFrames) // framesPerMinute)
+
+			else:
+				frames = frames + dropFrames * 9 * d
+
+			frRound = int(round(fps))
+			hr = int(frames // frRound // 60 // 60)
+			mn = int((frames // frRound // 60) % 60)
+			sc = int((frames // frRound) % 60)
+			fr = int(frames % frRound)
+
+		# Non drop frame calculation.
+		else:
+
+			fps = int(round(fps))
+			spacer  = ':'
+			spacer2 = spacer
+
+			frHour = fps * 3600
+			frMin  = fps * 60
+
+			hr = int(frames // frHour)
+			mn = int((frames - hr * frHour) // frMin)
+			sc = int((frames - hr * frHour - mn * frMin) // fps)
+			fr = int(round(frames -  hr * frHour - mn * frMin - sc * fps))
+
+		# Return SMPTE timecode string.
+		return(
+				str(hr).zfill(2) + spacer +
+				str(mn).zfill(2) + spacer +
+				str(sc).zfill(2) + spacer2 +
+				str(fr).zfill(2)
+				)
+
+# grabs stills to given album
+# input: grabFrame [int], tl [timeline item], heroFrame [int], stillAlbum [gallery still album]
+# output: none
+def grabStill(grabFrame, tl, heroFrame, stillAlbum):
+
+	tl_tc = get_tc(grabFrame, tl)
+
+	# set current timecode in while loop cause it doesn't work sometimes	
+	while tl.GetCurrentTimecode() != tl_tc:
+		tl.SetCurrentTimecode(tl_tc)
+
+	still = tl.GrabStill()		# grabs still
+	heroTC = get_tc(heroFrame, tl)
+	if itm['tc_check'].Checked:
+		stillAlbum.SetLabel(still, heroTC)
+		
+# gets list of all TCs where clips are found in given timeline
+# input: heroClips [lst of clip classed items], album [powergrade album]
+# output: grabs stills
+def gradeGrab(heroClips, album):
+
+	# placeholders
+	tcs = []
+	mediaIds = []
+	matchCounter = 0
+	matches = "Matches Found: " + str(matchCounter)
+
+	for path in pathqueue:
+		path.open()
+		project = projectManager.GetCurrentProject()
+		gallery = project.GetGallery()																								# for every queued path
+		tl = path.tl
+		
+		for i in range(1, tl.GetTrackCount("video")+1):																				# for every video track
+			trackLabel = "V" + str(i)
+			trackItems = tl.GetItemListInTrack("video",i)
+			loadingCounter = 0
+			loadingTotal = len(trackItems)
+			for searchClipItem in trackItems:																						# and item in that track
+				loadingCounter += 1
+				loadingLabel = "{:.2%}".format(float(loadingCounter)/float(loadingTotal))
+				itm["list"].Text = trackLabel + ": " + loadingLabel + "\n" + matches + "\n" + str(pathqueue)
+				searchClip = Clip(searchClipItem)																					# make it into class
+				if searchClip.isMedia and (searchClip.getMedia().GetMediaId() not in mediaIds):										# if it hasn't been hit
+					currentId = searchClip.getMedia().GetMediaId()																	# get the id
+					for hero in heroClips:																							# compare to every recap clip
+						grabTC = searchClip.frameMatch(hero) 																		# get the matching timeline timecode
+						if (grabTC != False) and (grabTC not in tcs):																# confirm it is a hit
+							matchCounter += 1																						# add to counter
+							matches = "Matches Found: " + str(matchCounter)															# display counter
+
+							gallery.SetCurrentStillAlbum(album)
+							grabStill(grabTC, tl, hero.tlStartFrame(), album)														# grab a still
+							
+							mediaIds.append(currentId)																				# add to hit list, and do it again
+							for f in range(searchClip.tlStartFrame(), searchClip.tlEndFrame(), 1): 
+								tcs.append(f)
 
 def _add(ev):
 
@@ -323,7 +681,7 @@ def _add(ev):
 	
 	for key in selected:
 		item = selected[key].Text[0]
-		tlDict[item] = project.GetTimelineByIndex(tlidx(project, item))
+		tlDict[item] = tlReturn(project, item)
 	
 	pathlist = toqueue.multiply(tlDict)
 	
@@ -344,7 +702,7 @@ def _clear(ev):
 	global pathqueue
 	pathqueue = None
 
-	itm["list"].Text = "Projects to search will be listed here."
+	itm["list"].Text = "Projects to search will be listed here.\n\n**Please ENABLE dynamic project switching**"
 	itm["grab"].Enabled = False
 	itm["clear"].Enabled = False
 
@@ -388,12 +746,11 @@ def _main(ev):
 	itm["grab"].Enabled = False
 	itm["clear"].Enabled = False
 
-
-	createPowergrade()	# create powergrade albume
-	# create mem
+	album = createPowergrade()	# create powergrade albume
+	heroClips = clipReturn(tlReturn(heroProject, itm["timelines"].CurrentText))
+	gradeGrab(heroClips, album)
 	
 	
-
 	itm["add"].Enabled = True
 	itm["grab"].Enabled = True
 	itm["clear"].Enabled = True
@@ -405,7 +762,7 @@ def _close(ev):
 ################################################################################################
 # GUI Elements #
 # manipulations
-itm["timelines"].AddItems(tlLst(projectManager.GetCurrentProject()))
+itm["timelines"].AddItems(tlLst(heroProject))
 projectManager.GotoRootFolder()
 projTree()
 # button presses
