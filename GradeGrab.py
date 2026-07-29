@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 # Created by: Moksh Chitkara
-# Last Update: Jul 28th 2026
-# v0.3.0
+# Last Update: Jul 29th 2026
+# v0.4.0
 # Copyright (C) 2026  Moksh Chitkara
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
@@ -100,12 +100,17 @@ class PathList:
 		return len(self.list)
 		
 	def __str__(self):
-		itm["grab"].Enabled = True
-		itm["clear"].Enabled = True
 		self.sort()
 		returnable = str(self.list[0])
 		for pathmem in self.list[1:]:
 			returnable = returnable + "\n" + str(pathmem)
+		return returnable
+		
+	def strikestr(self):
+		self.sort()
+		returnable = (self.list[0]).strikestr()
+		for pathmem in self.list[1:]:
+			returnable = returnable + "\n" + pathmem.strikestr()
 		return returnable
 	
 	def sort(self):
@@ -158,8 +163,14 @@ class PathMem:
 		self.path = [initial]
 		self.tl = None
 		self.searched = False
-		
+
 	def __str__(self):
+		if len(self.path) > 1:
+			return ' > '.join(self.path) 
+		else:
+			return str(self.path[0])
+		
+	def strikestr(self):
 		if len(self.path) > 1:
 			if self.searched:
 				return strike(' > '.join(self.path))
@@ -207,21 +218,21 @@ class PathMem:
 		return pathlist
 
 	def open(self):
-		log("Opening project from path", str(self))
+		log("Following folder path " + str(self))
 		projectManager.GotoRootFolder() # Goes to root in project manager 
 
 		i = 0
 		for folder in self.path:
-			i += 1
 			if not projectManager.OpenFolder(folder):
-				log("Stopped at", folder)
+				log("Path followed to " + folder)
 				break
+			i += 1
 
 		if projectManager.LoadProject(self.path[i]):
-			log("Opened project")
+			log("Opened project " + self.path[i])
 			current = projectManager.GetCurrentProject()
 			if current.SetCurrentTimeline(tlReturn(current, self.path[i+1])):
-				log("Opened timeline")
+				log("Opened timeline " + self.path[i+1])
 		else:
 			return False
 		return True
@@ -423,7 +434,18 @@ def log(info, level = 1):
 	
 	fullLog = [str(time), level, info]
 	print(" | ".join(fullLog))	
-	
+
+# strike through text provided and return
+# input: text [string]
+# output: result [string]
+def strike(text):
+	#result = text[0] + "\u0336"
+	result = ""
+	for c in text:
+		result += c + "\u0336"
+	#return result[1:]
+	return result
+
 # creates sorted list of all timelines in project
 # input: project [item]
 # output: tl_lst [list]
@@ -540,15 +562,6 @@ def createPowergrade():
 	else:
 		log("Powergrade album creation failed", 3)
 		return False
-		
-# strike through text provided and return
-# input: text [string]
-# output: result [string]
-def strike(text):
-	result = text[0] + "\u0336"
-	for c in text:
-		result += c + "\u0336"
-	return result[1:-1]
 
 # Converts frame count to SMPTE timecode.
 # input: frame [int], timeline
@@ -621,6 +634,10 @@ def grabStill(grabFrame, tl, heroFrame, stillAlbum):
 	while tl.GetCurrentTimecode() != tl_tc:
 		tl.SetCurrentTimecode(tl_tc)
 
+	if resolve.GetCurrentPage() != "color":
+		log("Moved to color page")
+		resolve.OpenPage("color")
+	
 	still = tl.GrabStill()		# grabs still
 	heroTC = get_tc(heroFrame, tl)
 	if itm['tc_check'].Checked:
@@ -634,10 +651,10 @@ def gradeGrab(heroClips, album):
 	# placeholders
 	tcs = []
 	mediaIds = []
-	matchCounter = 0
-	matches = "Matches Found: " + str(matchCounter)
 
 	for path in pathqueue:
+		if path.searched:
+			continue
 		path.open()
 		project = projectManager.GetCurrentProject()
 		gallery = project.GetGallery()																								# for every queued path
@@ -651,15 +668,13 @@ def gradeGrab(heroClips, album):
 			for searchClipItem in trackItems:																						# and item in that track
 				loadingCounter += 1
 				loadingLabel = "{:.2%}".format(float(loadingCounter)/float(loadingTotal))
-				itm["list"].Text = trackLabel + ": " + loadingLabel + "\n" + matches + "\n" + str(pathqueue)
+				itm["list"].Text = trackLabel + ": " + loadingLabel + "\n\n" + pathqueue.strikestr()
 				searchClip = Clip(searchClipItem)																					# make it into class
 				if searchClip.isMedia and (searchClip.getMedia().GetMediaId() not in mediaIds):										# if it hasn't been hit
 					currentId = searchClip.getMedia().GetMediaId()																	# get the id
 					for hero in heroClips:																							# compare to every recap clip
 						grabTC = searchClip.frameMatch(hero) 																		# get the matching timeline timecode
 						if (grabTC != False) and (grabTC not in tcs):																# confirm it is a hit
-							matchCounter += 1																						# add to counter
-							matches = "Matches Found: " + str(matchCounter)															# display counter
 
 							gallery.SetCurrentStillAlbum(album)
 							grabStill(grabTC, tl, hero.tlStartFrame(), album)														# grab a still
@@ -668,9 +683,15 @@ def gradeGrab(heroClips, album):
 							for f in range(searchClip.tlStartFrame(), searchClip.tlEndFrame(), 1): 
 								tcs.append(f)
 
+		path.searched = True
+		itm["list"].Text = "\n\n" + pathqueue.strikestr()
+
 def _add(ev):
 
 	log("Adding selected timelines to Queue")
+
+	itm["grab"].Enabled = True
+	itm["clear"].Enabled = True
 
 	selected = itm["browser"].SelectedItems()
 	
@@ -750,6 +771,7 @@ def _main(ev):
 	heroClips = clipReturn(tlReturn(heroProject, itm["timelines"].CurrentText))
 	gradeGrab(heroClips, album)
 	
+	log("Grade Grab Completed")
 	
 	itm["add"].Enabled = True
 	itm["grab"].Enabled = True
